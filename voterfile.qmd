@@ -1,0 +1,127 @@
+---
+title: "voterfile"
+format: html
+editor: visual
+---
+
+Necessary packages
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(shiny)
+library(tigris)
+```
+
+Importing data, initial cleaning (data comes from <https://redistrictingdatahub.org/>)
+
+```{r}
+
+path <- "./data/CA_l2_2022stats_2020block.csv"
+
+df <- read_csv(path) |> 
+  mutate(
+    has_block = !str_detect(geoid20, "NO"),
+    state = if_else(has_block, str_sub(geoid20, 1, 2), "06"), 
+    county = if_else(has_block, str_sub(geoid20, 1, 5), str_c("06", str_sub(geoid20, 1, 3))),
+    tract = if_else(has_block, str_sub(geoid20, 1, 11), NA_character_),
+    block_group = if_else(has_block, str_sub(geoid20, 1, 12), NA_character_)
+  )
+  
+```
+
+This is just a little bit of exploration of the data
+
+```{r}
+df |> 
+  filter(has_block) |> 
+  select(county, block_group, total_reg, starts_with("age")) |> 
+  pivot_longer(
+    cols = starts_with("age"),
+    names_to = "age_range",
+    names_prefix = "age_",
+    values_to = "age_n"
+  ) |> 
+  group_by(block_group) |> 
+  summarise(total_reg = sum(total_reg), age_range, age_n) |> 
+  mutate(age_perc = age_n / total_reg) |> 
+  summarise(sum(age_perc))
+
+```
+
+Pulling in some census data from tigris
+
+```{r}
+
+california_counties <- counties("California", year = 2020)
+
+california_block_groups <- block_groups("California", year = 2020)
+
+california_tracts <- tracts("California", year = 2020)
+```
+
+The next few blocks are joining the tigris census data (which includes plottable multipolygons) with the voterfile data
+
+```{r}
+california_counties <- california_counties |> 
+  select(GEOID, NAME, geometry)
+
+counties_list <- california_counties |> 
+  select(NAME) |> 
+  as.list()
+
+california_block_groups <- california_block_groups |> 
+  select(GEOID, geometry)
+
+california_tracts <- california_tracts |> 
+  select(GEOID, geometry)
+```
+
+```{r}
+voterfile_block_groups <- df |> 
+  filter(has_block) |> 
+  rename(GEOID = block_group)
+```
+
+```{r}
+voterfile_counties <- df |> 
+  filter(!has_block) |> 
+  rename(GEOID = county)
+```
+
+```{r}
+voterfile_tracts <- df |> 
+  filter(has_block) |> 
+  rename(GEOID = tract)
+```
+
+```{r}
+voterfile_block_groups <- voterfile_block_groups |>
+  left_join(california_block_groups, by = "GEOID") |> 
+  left_join(california_counties, join_by(county == GEOID)) |> 
+  rename(county_name = NAME) |>
+  rename(geometry = geometry.x) |> 
+  select(!geometry.y)
+
+voterfile_counties <- voterfile_counties |> 
+  left_join(california_counties, by = "GEOID")
+
+voterfile_tracts <-  voterfile_tracts |> 
+  left_join(california_tracts, by = "GEOID") |> 
+  left_join(california_counties, join_by(county == GEOID)) |> 
+  rename(county_name = NAME) |>
+  rename(geometry = geometry.x) |> 
+  select(!geometry.y)
+```
+
+Visualizing the count of republican voters in San Francisco's census block groups
+
+```{r}
+voterfile_block_groups |> 
+  filter(county_name == "San Francisco") |> 
+  mutate(prop_rep = party_rep/total_reg) |> 
+  ggplot(aes(fill = log10(party_rep))) + 
+  geom_sf(aes(geometry = geometry)) +
+  scale_fill_viridis_c(option = "magma") +
+  xlim(122.55, 122.35)
+```
